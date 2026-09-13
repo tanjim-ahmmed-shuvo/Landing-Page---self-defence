@@ -538,6 +538,85 @@
 
       observer.observe(orderSection);
     }
+
+    // ৫. নতুন আইপি ভিজিটর ট্র্যাকিং (টেলিগ্রাম অ্যালার্ট)
+    async function trackNewVisitor() {
+      try {
+        // ১. রিফ্রেশ দিলে বারবার যেন মেসেজ না আসে (Session check)
+        if (sessionStorage.getItem('storehub_visited_session')) {
+          return;
+        }
+        sessionStorage.setItem('storehub_visited_session', 'true');
+
+        let ip = '';
+        let locationStr = '';
+
+        // আইপি ও লোকেশন ডেটা পাওয়ার চেষ্টা
+        try {
+          const res = await fetch('https://freeipapi.com/api/json');
+          if (res.ok) {
+            const data = await res.json();
+            ip = data.ipAddress || '';
+            const city = data.cityName ? `${data.cityName}, ` : '';
+            const country = data.countryName || 'Bangladesh';
+            locationStr = `${city}${country}`;
+          }
+        } catch (e) {
+          // ফলব্যাক যদি প্রথম সার্ভিসে কোনো সমস্যা হয়
+          try {
+            const resFallback = await fetch('https://api.ipify.org?format=json');
+            if (resFallback.ok) {
+              const dataFallback = await resFallback.json();
+              ip = dataFallback.ip || '';
+            }
+          } catch (e2) {}
+        }
+
+        if (!ip) return;
+
+        // ২. এই আইপি থেকে পূর্বে নোটিফিকেশন পাঠানো হয়েছে কি না চেক (LocalStorage check)
+        const recordedIp = localStorage.getItem('storehub_visitor_ip');
+        if (recordedIp === ip) {
+          return; // একই আইপি, পুনরায় মেসেজ পাঠানোর প্রয়োজন নেই
+        }
+
+        // নতুন আইপি সংরক্ষণ করা
+        localStorage.setItem('storehub_visitor_ip', ip);
+
+        // ডিভাইস ও সময় নির্ধারণ
+        const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        const deviceType = isMobile ? "📱 মোবাইল ফোন" : "💻 কম্পিউটার / ল্যাপটপ";
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+
+        const visitorMsg = `👀 *নতুন ভিজিটর ওয়েবসাইটে প্রবেশ করেছে!*\n\n` +
+                           `🌐 *আইপি:* \`${ip}\`\n` +
+                           (locationStr ? `📍 *লোকেশন:* ${locationStr}\n` : '') +
+                           `📱 *ডিভাইস:* ${deviceType}\n` +
+                           `⏰ *সময়:* ${timeStr}\n` +
+                           `🛍️ *শপ:* StoreHub BD (928 Type সেফটি ডিভাইস)`;
+
+        await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: visitorMsg,
+            parse_mode: 'Markdown'
+          })
+        });
+      } catch (err) {
+        // কোনো অবস্থাতেই পেজের সাধারণ কার্যক্রম যাতে ব্যাহত না হয়
+        console.warn('Visitor tracking error:', err);
+      }
+    }
+
+    // পেজ লোড সম্পন্ন হলে ট্র্যাকার কল করা
+    if (document.readyState === 'complete') {
+      setTimeout(trackNewVisitor, 600);
+    } else {
+      window.addEventListener('load', () => setTimeout(trackNewVisitor, 600));
+    }
   </script>
 
 </body>
