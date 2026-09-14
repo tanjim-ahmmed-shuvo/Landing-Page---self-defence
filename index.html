@@ -390,11 +390,14 @@
     updateTimer(); // পেজ লোড হওয়ার সাথে সাথেই ইনস্ট্যান্ট আপডেট হবে
     setInterval(updateTimer, 1000);
 
-    // ২. টেলিগ্রাম বট ও কনফার্মেশন হ্যান্ডলার
+    // ২. টেলিগ্রাম বট ও লিড/অর্ডার হ্যান্ডলার
     const botToken = "8971454960:AAFHrlbWHPJjzSUvPu0D6lg6Ba9QqjWoSxY";
     const chatId = "8705305319";
 
     const orderForm = document.getElementById('orderForm');
+    const custNameInput = document.getElementById('custName');
+    const custPhoneInput = document.getElementById('custPhone');
+    const custAddressInput = document.getElementById('custAddress');
     const orderModal = document.getElementById('orderConfirmModal');
     const confirmStepBox = document.getElementById('confirmStepBox');
     const successStepBox = document.getElementById('successStepBox');
@@ -405,14 +408,112 @@
     const statusMsg = document.getElementById('statusMsg');
 
     let currentOrderData = null;
+    let hasPartialLeadSent = false;
+    let lastSentPhone = "";
+    let isOrderFinalConfirmed = false;
 
-    // ফর্ম সাবমিট চাপলে প্রথমে মডাল পপআপ ওপেন হবে
+    // ডিভাইস ও সময় পাওয়ার সহায়ক ফাংশন
+    function getDeviceAndTimestamp() {
+      const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      const deviceType = isMobile ? "📱 মোবাইল ফোন" : "💻 কম্পিউটার";
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+      return { deviceType, timeStr };
+    }
+
+    // টেলিগ্রামে সুরক্ষিতভাবে মেসেজ পাঠানোর মূল ফাংশন (keepalive সহ যাতে ব্রাউজার বন্ধ করলেও যায়)
+    async function sendTelegramNotification(messageText) {
+      try {
+        await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: messageText,
+            parse_mode: 'Markdown'
+          }),
+          keepalive: true
+        });
+      } catch (err) {
+        console.warn('Telegram notification notice:', err);
+      }
+    }
+
+    // ইনকমপ্লিট / আংশিক ফর্ম লিড টেলিগ্রামে পাঠানোর ফাংশন
+    function capturePartialLead(triggerReason = "form_submit") {
+      if (isOrderFinalConfirmed) return;
+
+      const name = custNameInput.value.trim();
+      const phone = custPhoneInput.value.trim();
+      const address = custAddressInput.value.trim();
+
+      // ফোন নম্বরে ন্যূনতম ১১ ডিজিট থাকতে হবে
+      const cleanPhone = phone.replace(/\D/g, '');
+      if (cleanPhone.length < 11) return;
+
+      // যদি এই ফোন নম্বরের আংশিক লিড ইতিমধ্যে পাঠানো হয়ে থাকে, তবে বারবার পাঠাবে না
+      if (hasPartialLeadSent && lastSentPhone === cleanPhone) return;
+
+      hasPartialLeadSent = true;
+      lastSentPhone = cleanPhone;
+
+      const { deviceType, timeStr } = getDeviceAndTimestamp();
+
+      let reasonText = "ফর্ম পূরণ করে মডালে গেছেন, চূড়ান্ত কনফার্ম বাকি";
+      if (triggerReason === "enter_press") {
+        reasonText = "নাম ও ফোন দিয়ে এন্টার চেপেছেন (কনফার্মেশন বাকি)";
+      } else if (triggerReason === "phone_blur" || triggerReason === "abandoned") {
+        reasonText = "নাম ও ফোন নম্বর লিখে পেজে অবস্থান করছেন বা ফর্ম ছেড়ে দিচ্ছেন";
+      }
+
+      const partialMsg = `⚠️ *অসম্পূর্ণ অর্ডার / ফর্ম লিড!* ⚠️\n\n` +
+        `👤 *নাম:* ${name || '(নাম এখনও লিখেননি)'}\n` +
+        `📞 *মোবাইল নম্বর:* \`${phone}\`\n` +
+        `📍 *ঠিকানা:* ${address || '(ঠিকানা এখনও দেননি)'}\n` +
+        `🕒 *সময়:* ${timeStr}\n` +
+        `📱 *ডিভাইস:* ${deviceType}\n` +
+        `⚡ *অবস্থা:* ${reasonText}\n\n` +
+        `💡 *টিপস:* কাস্টমার হয়তো রিটার্ন পলিসি বা শর্তাবলী দেখে কনফার্ম না করে পেজ কেটে দিচ্ছেন। দ্রুত এই নম্বরে কল করে সরাসরি অর্ডার কনফার্ম করে নিতে পারেন!`;
+
+      sendTelegramNotification(partialMsg);
+    }
+
+    // নাম ও ফোন ফিল্ডে এন্টার চাপলে বা ইনপুট দেওয়ার পর লিড ক্যাপচার
+    [custNameInput, custPhoneInput, custAddressInput].forEach(input => {
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          const phone = custPhoneInput.value.trim().replace(/\D/g, '');
+          if (phone.length >= 11) {
+            capturePartialLead("enter_press");
+          }
+        }
+      });
+    });
+
+    // ফোন নম্বর ফিল্ড থেকে বের হলে (blur) অথবা ১১ ডিজিট লেখা শেষ হলে লিড সংরক্ষণ
+    custPhoneInput.addEventListener('blur', function () {
+      capturePartialLead("phone_blur");
+    });
+
+    // পেজ ছেড়ে যাওয়ার চেষ্টা করলেও যদি নাম ও ফোন লেখা থাকে তবে টেলিগ্রামে ব্যাকআপ যাবে
+    window.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') {
+        capturePartialLead("abandoned");
+      }
+    });
+
+    window.addEventListener('beforeunload', function () {
+      capturePartialLead("abandoned");
+    });
+
+    // ফর্ম সাবমিট চাপলে (অর্ডার প্লেস করুন বাটন বা এন্টার দিলে)
+    // তৎক্ষণাৎ টেলিগ্রামে লিড চলে যাবে এবং একই সাথে স্ক্রিনে কনফার্মেশন মডাল ওপেন হবে
     orderForm.addEventListener('submit', function (e) {
       e.preventDefault();
 
-      const name = document.getElementById('custName').value.trim();
-      const phone = document.getElementById('custPhone').value.trim();
-      const address = document.getElementById('custAddress').value.trim();
+      const name = custNameInput.value.trim();
+      const phone = custPhoneInput.value.trim();
+      const address = custAddressInput.value.trim();
 
       if (!name || !phone || !address) {
         return;
@@ -430,6 +531,9 @@
       successStepBox.classList.add('hidden');
       finalConfirmBtn.disabled = false;
       finalConfirmBtn.innerHTML = "<span>হ্যাঁ, আমি সম্মত ও কনফার্ম করতে চাই</span>";
+
+      // ১. তাৎক্ষণিকভাবে টেলিগ্রামে লিড অ্যালার্ট পাঠানো (যাতে মডাল ক্যান্সেল করলেও লিড মিস না হয়)
+      capturePartialLead("form_submit");
 
       // মেটা পিক্সেল InitiateCheckout ইভেন্ট ফায়ার
       if (typeof fbq !== 'undefined') {
@@ -465,6 +569,7 @@
     finalConfirmBtn.addEventListener('click', async function () {
       if (!currentOrderData) return;
 
+      isOrderFinalConfirmed = true;
       finalConfirmBtn.disabled = true;
       finalConfirmBtn.innerHTML = `
         <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -483,27 +588,19 @@
         });
       }
 
-      const telegramMsg = `🚨 *নতুন অর্ডার কনফার্ম হয়েছে!*\n\n` +
+      const { deviceType, timeStr } = getDeviceAndTimestamp();
+
+      const telegramMsg = `🎉 *নতুন অর্ডার চূড়ান্তভাবে কনফার্ম হয়েছে!* ✅\n\n` +
         `👤 *নাম:* ${currentOrderData.name}\n` +
-        `📞 *ফোন:* ${currentOrderData.phone}\n` +
+        `📞 *ফোন:* \`${currentOrderData.phone}\`\n` +
         `📍 *ঠিকানা:* ${currentOrderData.address}\n` +
         `💰 *মূল্য:* ১৫৯৯ টাকা (Free Delivery)\n` +
         `📦 *প্রোডাক্ট:* 928 Type Stun Gun\n` +
+        `🕒 *সময়:* ${timeStr}\n` +
+        `📱 *ডিভাইস:* ${deviceType}\n` +
         `⚠️ *শর্ত:* পণ্য রিসিভ না করলে ডেলিভারি চার্জ দিয়ে রিটার্ন করতে হবে (গ্রাহক সম্মত)`;
 
-      try {
-        await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: telegramMsg,
-            parse_mode: 'Markdown'
-          })
-        });
-      } catch (err) {
-        console.warn('Telegram API fallback or network notice', err);
-      }
+      await sendTelegramNotification(telegramMsg);
 
       // ফর্ম রিসেট ও ব্যাকগ্রাউন্ড স্ট্যাটাস আপডেট
       orderForm.reset();
